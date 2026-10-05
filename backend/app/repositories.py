@@ -26,6 +26,16 @@ class BasinRepo:
         )
         return result.scalars().first()
 
+    async def all_yards(self) -> list[Filature]:
+        result = await self.session.execute(
+            select(Filature)
+            .options(
+                selectinload(Filature.basins).selectinload(Basin.readings)
+            )
+            .order_by(Filature.id)
+        )
+        return list(result.scalars().unique().all())
+
     async def get(self, basin_id: int) -> Basin | None:
         result = await self.session.execute(
             select(Basin)
@@ -34,13 +44,24 @@ class BasinRepo:
         )
         return result.scalar_one_or_none()
 
+    async def lock_yard(self, filature_id: int) -> None:
+        """锁住同坞全部盆行（按环序），串行化同坞并发改态。"""
+        await self.session.execute(
+            select(Basin.id)
+            .where(Basin.filature_id == filature_id)
+            .order_by(Basin.ring_index, Basin.id)
+            .with_for_update()
+        )
+
+    async def yard_peers(self, filature_id: int) -> list[Basin]:
+        result = await self.session.execute(
+            select(Basin).where(Basin.filature_id == filature_id)
+        )
+        return list(result.scalars().all())
+
     async def add_reading(self, basin: Basin, temp_c: float, operator: str) -> BathReading:
         row = BathReading(basin=basin, water_temp_c=temp_c, operator=operator)
         self.session.add(row)
         await self.session.commit()
         await self.session.refresh(row)
         return row
-
-    async def save_status(self, basin: Basin, status: str) -> None:
-        basin.status = status
-        await self.session.commit()

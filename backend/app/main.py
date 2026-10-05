@@ -1,11 +1,17 @@
 from quart import Quart, g, jsonify, request
-from quart.helpers import make_response
+from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import Basin
 from app.repositories import BasinRepo, UserRepo
 from app.security import make_token, parse_token, verify_password
-from app.services import RuleError, assert_can_set_status, latest_temp
+from app.services import (
+    ConflictError,
+    RuleError,
+    assert_can_set_status,
+    latest_temp,
+    nearest_reeling,
+)
 
 app = Quart(__name__)
 
@@ -70,8 +76,18 @@ def _basin_json(basin: Basin) -> dict:
         "code": basin.code,
         "status": basin.status,
         "ringIndex": basin.ring_index,
+        "cocoonCount": basin.cocoon_count,
         "latestTempC": latest_temp(basin),
         "readingCount": len(basin.readings or []),
+    }
+
+
+def _yard_json(mill, basins) -> dict:
+    return {
+        "id": mill.id,
+        "name": mill.name,
+        "riverside": mill.riverside,
+        "basins": [_basin_json(b) for b in sorted(basins, key=lambda b: b.ring_index)],
     }
 
 
@@ -81,15 +97,10 @@ async def board():
     if denied:
         return denied
     async with SessionLocal() as session:
-        mill = await BasinRepo(session).board()
-        if mill is None:
+        yards = await BasinRepo(session).all_yards()
+        if not yards:
             return jsonify({"detail": "尚无缫丝坞"}), 404
-        basins = sorted(mill.basins, key=lambda b: b.ring_index)
-        return {
-            "filature": mill.name,
-            "riverside": mill.riverside,
-            "basins": [_basin_json(b) for b in basins],
-        }
+        return {"yards": [_yard_json(mill, mill.basins) for mill in yards]}
 
 
 @app.route("/api/basins/<int:basin_id>/readings", methods=["POST"])
@@ -121,13 +132,78 @@ async def set_status(basin_id: int):
     status = (body or {}).get("status", "")
     async with SessionLocal() as session:
         repo = BasinRepo(session)
-        basin = await repo.get(basin_id)
-        if basin is None:
-            return jsonify({"detail": "盆不存在"}), 404
+
+        class _NotFound(Exception):
+            pass
+
         try:
-            assert_can_set_status(basin, status)
+            async with session.begin():
+                # 事务内先取坞号，再锁坞、锁内重读，保证校验基于最新快照
+                fid_row = (
+                    await session.execute(
+                        select(Basin.filature_id).where(Basin.id == basin_id)
+                    )
+                ).first()
+                if fid_row is None:
+                    raise _NotFound
+                filature_id = fid_row[0]
+                await repo.lock_yard(filature_id)
+                basin = await repo.get(basin_id)
+                peers = await repo.yard_peers(filature_id)
+                assert_can_set_status(basin, status, peers)
+                basin.status = status
+        except _NotFound:
+            return jsonify({"detail": "盆不存在"}), 404
         except RuleError as exc:
             return jsonify({"detail": str(exc)}), 400
-        await repo.save_status(basin, status)
-        basin = await repo.get(basin_id)
+        except ConflictError as exc:
+            return jsonify({"detail": str(exc)}), 409
         return _basin_json(basin)
+
+
+@app.route("/api/cocoon-board")
+async def cocoon_board():
+    """茧粒台（只读）：各坞各盆茧粒数与最近缫丝中盆的差。"""
+    denied = require_user()
+    if denied:
+        return denied
+    try:
+        filature_id = int(request.args.get("filature_id")) if request.args.get("filature_id") else None
+    except ValueError:
+        return jsonify({"detail": "filature_id 必须是整数"}), 400
+    async with SessionLocal() as session:
+        yards = await BasinRepo(session).all_yards()
+        result = []
+        for mill in yards:
+            if filature_id is not None and mill.id != filature_id:
+                continue
+            basins = sorted(mill.basins, key=lambda b: b.ring_index)
+            entries = []
+            for basin in basins:
+                ref = nearest_reeling(basin, basins)
+                if ref is None or ref.id == basin.id:
+                    diff = None
+                    ref_code = None
+                else:
+                    diff = abs(basin.cocoon_count - ref.cocoon_count)
+                    ref_code = ref.code
+                entries.append(
+                    {
+                        "id": basin.id,
+                        "code": basin.code,
+                        "status": basin.status,
+                        "ringIndex": basin.ring_index,
+                        "cocoonCount": basin.cocoon_count,
+                        "nearestReelingCode": ref_code,
+                        "diffToNearestReeling": diff,
+                    }
+                )
+            result.append(
+                {
+                    "id": mill.id,
+                    "name": mill.name,
+                    "riverside": mill.riverside,
+                    "basins": entries,
+                }
+            )
+        return {"yards": result}

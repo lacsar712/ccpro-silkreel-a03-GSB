@@ -60,4 +60,60 @@ button, input {
 .err { color: #b42318; }
 .hint { color: #6b5a48; font-size: 0.92em; }
 label { display: block; margin: 8px 0; }
-.topbar { display: flex; justify-content: space-between; align-items: baseline; }
+.topbar { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.topnav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 2px solid #e6d5a5;
+}
+.topnav button {
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+}
+.topnav button.nav-on {
+  border-bottom-color: var(--gold);
+  color: #8a6d1a;
+  font-weight: 600;
+}
+.topnav .logout { margin-left: auto; }
+.yard-pick {
+  align-self: center;
+  min-width: 180px;
+}
+.basin.picked {
+  outline: 4px solid var(--gold);
+  outline-offset: 2px;
+}
+.basin span { line-height: 1.25; }
+.cocoon-yard {
+  background: #fff;
+  border: 1px solid #e4d8bf;
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin: 18px 0;
+}
+.cocoon-yard h2 { margin: 4px 0 10px; font-size: 1.08em; font-weight: 600; }
+.cocoon-yard table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.cocoon-yard th, .cocoon-yard td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #efe6d2;
+}
+.cocoon-yard th {
+  color: #6b5a48;
+  font-weight: 600;
+  background: #faf5e9;
+}
+.cocoon-yard tbody tr.over td {
+  color: #b42318;
+  font-weight: 600;
+}

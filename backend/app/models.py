@@ -43,6 +43,7 @@ class Basin(Base):
     code: Mapped[str] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20), default=STATUS_SOAKING)
     ring_index: Mapped[int] = mapped_column(Integer, default=0)
+    cocoon_count: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str] = mapped_column(Text, default="")
     filature: Mapped[Filature] = relationship(back_populates="basins")
     readings: Mapped[list["BathReading"]] = relationship(back_populates="basin")
