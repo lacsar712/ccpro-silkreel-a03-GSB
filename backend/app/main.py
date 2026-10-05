@@ -5,7 +5,12 @@ from app.db import SessionLocal
 from app.models import Basin
 from app.repositories import BasinRepo, UserRepo
 from app.security import make_token, parse_token, verify_password
-from app.services import RuleError, assert_can_set_status, latest_temp
+from app.services import (
+    RuleError,
+    assert_can_set_status,
+    latest_temp,
+    widest_reeling_gap,
+)
 
 app = Quart(__name__)
 
@@ -70,6 +75,7 @@ def _basin_json(basin: Basin) -> dict:
         "code": basin.code,
         "status": basin.status,
         "ringIndex": basin.ring_index,
+        "cocoonGrains": basin.cocoon_grains,
         "latestTempC": latest_temp(basin),
         "readingCount": len(basin.readings or []),
     }
@@ -121,13 +127,53 @@ async def set_status(basin_id: int):
     status = (body or {}).get("status", "")
     async with SessionLocal() as session:
         repo = BasinRepo(session)
+        # 先锁坞行：并发抢改同坞盆时串行，后到者读到的是前一笔提交后的状态
+        await repo.lock_dock_of(basin_id)
         basin = await repo.get(basin_id)
         if basin is None:
             return jsonify({"detail": "盆不存在"}), 404
+        siblings = await repo.siblings(basin)
         try:
-            assert_can_set_status(basin, status)
+            assert_can_set_status(basin, status, siblings)
         except RuleError as exc:
             return jsonify({"detail": str(exc)}), 400
         await repo.save_status(basin, status)
         basin = await repo.get(basin_id)
         return _basin_json(basin)
+
+
+@app.route("/api/cocoon-board")
+async def cocoon_board():
+    """茧粒台：只读列出各坞各盆茧粒，以及与缫丝中邻盆的最大差。"""
+    denied = require_user()
+    if denied:
+        return denied
+    async with SessionLocal() as session:
+        repo = BasinRepo(session)
+        docks = []
+        for mill in await repo.docks():
+            basins = sorted(mill.basins, key=lambda b: b.ring_index)
+            rows = []
+            for basin in basins:
+                hit = widest_reeling_gap(basin, basins)
+                rows.append(
+                    {
+                        "id": basin.id,
+                        "code": basin.code,
+                        "status": basin.status,
+                        "ringIndex": basin.ring_index,
+                        "cocoonGrains": basin.cocoon_grains,
+                        "latestTempC": latest_temp(basin),
+                        "gapToReeling": hit[1] if hit else None,
+                        "neighborCode": hit[0].code if hit else None,
+                    }
+                )
+            docks.append(
+                {
+                    "id": mill.id,
+                    "name": mill.name,
+                    "riverside": mill.riverside,
+                    "basins": rows,
+                }
+            )
+        return {"docks": docks}
